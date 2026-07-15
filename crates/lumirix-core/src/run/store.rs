@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use super::model::{RunEvent, RunRecord};
+use super::model::{DiffSummary, RunEvent, RunRecord};
 use crate::paths::LumirixPaths;
 
 #[derive(Debug, Error)]
@@ -30,6 +30,9 @@ pub struct RunPaths {
     pub stdout: PathBuf,
     pub stderr: PathBuf,
     pub commands: PathBuf,
+    pub diff_patch: PathBuf,
+    pub rollback_patch: PathBuf,
+    pub diff_summary: PathBuf,
 }
 
 impl RunPaths {
@@ -41,6 +44,9 @@ impl RunPaths {
             stdout: dir.join("stdout.log"),
             stderr: dir.join("stderr.log"),
             commands: dir.join("commands.log"),
+            diff_patch: dir.join("diff.patch"),
+            rollback_patch: dir.join("rollback.patch"),
+            diff_summary: dir.join("diff_summary.json"),
             dir,
         }
     }
@@ -75,6 +81,26 @@ pub fn append_event(paths: &RunPaths, event: &RunEvent) -> Result<(), StoreError
 pub fn write_commands_log(paths: &RunPaths, command: &str) -> Result<(), StoreError> {
     fs::write(&paths.commands, format!("{command}\n"))?;
     Ok(())
+}
+
+pub fn write_text(path: &Path, content: &str) -> Result<(), StoreError> {
+    fs::write(path, content)?;
+    Ok(())
+}
+
+pub fn write_diff_summary(paths: &RunPaths, summary: &DiffSummary) -> Result<(), StoreError> {
+    let json = serde_json::to_string_pretty(summary)?;
+    fs::write(&paths.diff_summary, format!("{json}\n"))?;
+    Ok(())
+}
+
+pub fn load_diff_summary(paths: &LumirixPaths, run_id: &str) -> Result<Option<DiffSummary>, StoreError> {
+    let run_paths = RunPaths::new(&paths.runs_dir, run_id);
+    if !run_paths.diff_summary.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&run_paths.diff_summary)?;
+    Ok(Some(serde_json::from_str(&raw)?))
 }
 
 pub fn load_run(paths: &LumirixPaths, run_id: &str) -> Result<RunRecord, StoreError> {

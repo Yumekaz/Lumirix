@@ -1,5 +1,6 @@
 //! Agent run wrapper: execute, capture, list, and show runs.
 
+mod diff;
 mod id;
 mod model;
 mod process;
@@ -8,12 +9,16 @@ mod store;
 use chrono::Local;
 use thiserror::Error;
 
+use crate::config::{Config, ConfigError};
 use crate::db::{self, DbError};
 use crate::git;
 use crate::paths::LumirixPaths;
 
-pub use model::{RunEvent, RunRecord, RunStatus};
-pub use store::{load_all_runs, load_last, load_run, list_run_ids, resolve_last_run_id, StoreError};
+pub use model::{DiffSummary, FileDiffStat, RunEvent, RunRecord, RunStatus};
+pub use store::{
+    load_all_runs, load_diff_summary, load_last, load_run, list_run_ids, resolve_last_run_id,
+    StoreError,
+};
 
 #[derive(Debug, Error)]
 pub enum RunError {
@@ -21,6 +26,12 @@ pub enum RunError {
     NotInitialized,
     #[error("no command provided; usage: lumirix run -- <command> [args...]")]
     EmptyCommand,
+    #[error(
+        "Git worktree is dirty. Commit or stash changes, or re-run with --allow-dirty."
+    )]
+    DirtyWorktree,
+    #[error(transparent)]
+    Config(#[from] ConfigError),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -38,11 +49,18 @@ pub struct ExecuteOutcome {
     pub child_exit_code: i32,
 }
 
+/// Options for a captured run.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    pub task: Option<String>,
+    pub allow_dirty: bool,
+}
+
 /// Execute a command under Lumirix capture.
 pub fn execute_run(
     paths: &LumirixPaths,
     argv: Vec<String>,
-    task: Option<String>,
+    options: RunOptions,
 ) -> Result<ExecuteOutcome, RunError> {
     if !paths.is_initialized() {
         return Err(RunError::NotInitialized);
@@ -51,9 +69,24 @@ pub fn execute_run(
         return Err(RunError::EmptyCommand);
     }
 
+    let config = Config::load(paths)?;
     let agent_command = join_command(&argv);
     let agent_name = argv[0].clone();
-    let git = git::detect_git(&paths.root);
+    let git_info = git::detect_git(&paths.root);
+
+    let dirty_before = if git_info.is_repo {
+        git::is_worktree_dirty(&paths.root)
+    } else {
+        false
+    };
+
+    if git_info.is_repo
+        && config.git.require_clean_worktree_before_run
+        && !options.allow_dirty
+        && dirty_before
+    {
+        return Err(RunError::DirtyWorktree);
+    }
 
     let run_id = id::next_run_id(&paths.runs_dir)?;
     let run_paths = store::RunPaths::new(&paths.runs_dir, &run_id);
@@ -69,12 +102,13 @@ pub fn execute_run(
         agent_name,
         started_at: started_at.clone(),
         ended_at: None,
-        base_commit: git.commit.clone(),
-        branch: git.branch.clone(),
+        base_commit: git_info.commit.clone(),
+        branch: git_info.branch.clone(),
         final_commit: None,
         status: RunStatus::Running,
         exit_code: None,
-        task,
+        task: options.task,
+        git_diff: None,
     };
     store::write_run_json(&run_paths, &record)?;
 
@@ -97,6 +131,8 @@ pub fn execute_run(
         serde_json::json!({
             "command": agent_command,
             "cwd": paths.root.display().to_string(),
+            "dirty_before": dirty_before,
+            "allow_dirty": options.allow_dirty,
         }),
     )?;
     next_event(
@@ -126,16 +162,33 @@ pub fn execute_run(
             (status, Some(r.exit_code), r.exit_code)
         }
         Err(e) => {
-            // Still finish the run record for auditability.
             let msg = e.to_string();
             let _ = next_event(
                 "command.ended",
                 serde_json::json!({ "error": msg, "exit_code": null }),
             );
-            let _ = next_event(
-                "run.ended",
-                serde_json::json!({ "status": "error" }),
-            );
+            // Still attempt diff capture for partial audit.
+            if git_info.is_repo && config.git.capture_diff {
+                if let Ok(summary) = diff::capture_diff_for_run(
+                    &paths.root,
+                    &run_paths,
+                    git_info.commit.clone(),
+                    dirty_before,
+                    config.git.generate_rollback,
+                ) {
+                    let _ = next_event(
+                        "git.diff.captured",
+                        serde_json::json!({
+                            "files_changed": summary.files_changed,
+                            "rollback_status": summary.rollback_status,
+                        }),
+                    );
+                    record.git_diff = Some(summary);
+                }
+            } else if !git_info.is_repo {
+                record.git_diff = Some(diff::no_git_summary(dirty_before));
+            }
+            let _ = next_event("run.ended", serde_json::json!({ "status": "error" }));
             record.ended_at = Some(ended_at.clone());
             record.status = RunStatus::Error;
             record.exit_code = None;
@@ -158,6 +211,29 @@ pub fn execute_run(
         "command.ended",
         serde_json::json!({ "exit_code": exit_code }),
     )?;
+
+    if git_info.is_repo && config.git.capture_diff {
+        let summary = diff::capture_diff_for_run(
+            &paths.root,
+            &run_paths,
+            git_info.commit.clone(),
+            dirty_before,
+            config.git.generate_rollback,
+        )?;
+        next_event(
+            "git.diff.captured",
+            serde_json::json!({
+                "files_changed": summary.files_changed,
+                "lines_added": summary.lines_added,
+                "lines_deleted": summary.lines_deleted,
+                "rollback_status": summary.rollback_status,
+            }),
+        )?;
+        record.git_diff = Some(summary);
+    } else if !git_info.is_repo {
+        record.git_diff = Some(diff::no_git_summary(dirty_before));
+    }
+
     next_event(
         "run.ended",
         serde_json::json!({ "status": status.as_str(), "exit_code": exit_code }),
@@ -213,9 +289,19 @@ pub fn format_show(record: &RunRecord, paths: &LumirixPaths) -> String {
     if let Some(ref t) = record.task {
         lines.push(format!("Task: {t}"));
     }
+    append_diff_lines(&mut lines, record.git_diff.as_ref());
     lines.push(format!("Directory: {}", run_dir.display()));
     lines.push(format!("Stdout: {}", run_dir.join("stdout.log").display()));
     lines.push(format!("Stderr: {}", run_dir.join("stderr.log").display()));
+    if run_dir.join("diff.patch").is_file() {
+        lines.push(format!("Diff patch: {}", run_dir.join("diff.patch").display()));
+    }
+    if run_dir.join("rollback.patch").is_file() {
+        lines.push(format!(
+            "Rollback patch: {}",
+            run_dir.join("rollback.patch").display()
+        ));
+    }
     lines.join("\n")
 }
 
@@ -245,7 +331,57 @@ pub fn format_minimal_report(record: &RunRecord, paths: &LumirixPaths) -> String
         Some(c) => lines.push(format!("Base commit: {c}")),
         None => lines.push("Base commit: (none)".to_string()),
     }
+    append_diff_lines(&mut lines, record.git_diff.as_ref());
     lines.push(format!("Logs: {}", run_dir.join("stdout.log").display()));
+    lines.join("\n")
+}
+
+/// `lumirix diff last` output (success-criteria style).
+pub fn format_diff_report(record: &RunRecord, paths: &LumirixPaths) -> String {
+    let run_dir = paths.runs_dir.join(&record.run_id);
+    let mut lines = vec![format!("Run: {}", record.run_id)];
+
+    if let Some(ref d) = record.git_diff {
+        lines.push(format!("Files changed: {}", d.files_changed));
+        lines.push(format!("Lines added: {}", d.lines_added));
+        lines.push(format!("Lines deleted: {}", d.lines_deleted));
+        let rb = match d.rollback_status.as_str() {
+            "available" => "available",
+            "partial" => "partial",
+            "no_changes" => "not needed (no changes)",
+            "no_git" => "unavailable (no git)",
+            "disabled" => "disabled",
+            _ => "unavailable",
+        };
+        lines.push(format!("Rollback patch: {rb}"));
+        if !d.files.is_empty() {
+            lines.push("Files:".to_string());
+            for f in &d.files {
+                lines.push(format!("  {} (+{} -{})", f.path, f.added, f.deleted));
+            }
+        }
+        if !d.untracked.is_empty() {
+            lines.push("Untracked (not in patch):".to_string());
+            for u in &d.untracked {
+                lines.push(format!("  {u}"));
+            }
+        }
+        lines.push(format!("dirty_before: {}", d.dirty_before));
+        lines.push(format!("dirty_after: {}", d.dirty_after));
+    } else {
+        lines.push("Files changed: (not captured)".to_string());
+        lines.push("Rollback patch: unavailable".to_string());
+    }
+
+    if run_dir.join("diff.patch").is_file() {
+        lines.push(format!("Diff patch: {}", run_dir.join("diff.patch").display()));
+    }
+    if run_dir.join("rollback.patch").is_file() {
+        lines.push(format!(
+            "Rollback patch file: {}",
+            run_dir.join("rollback.patch").display()
+        ));
+    }
     lines.join("\n")
 }
 
@@ -255,13 +391,36 @@ pub fn format_run_list_line(record: &RunRecord) -> String {
         .exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "-".to_string());
+    let files = record
+        .git_diff
+        .as_ref()
+        .map(|d| d.files_changed.to_string())
+        .unwrap_or_else(|| "-".to_string());
     format!(
-        "{:<22}  {:<10}  exit={:<4}  {}",
+        "{:<22}  {:<10}  exit={:<4}  files={:<4}  {}",
         record.run_id,
         record.status.as_str(),
         exit,
+        files,
         record.agent_command
     )
+}
+
+fn append_diff_lines(lines: &mut Vec<String>, summary: Option<&DiffSummary>) {
+    if let Some(d) = summary {
+        lines.push(format!("Files changed: {}", d.files_changed));
+        lines.push(format!("Lines added: {}", d.lines_added));
+        lines.push(format!("Lines deleted: {}", d.lines_deleted));
+        let rb = match d.rollback_status.as_str() {
+            "available" => "available",
+            "partial" => "partial",
+            "no_changes" => "not needed",
+            "no_git" => "unavailable (no git)",
+            "disabled" => "disabled",
+            _ => "unavailable",
+        };
+        lines.push(format!("Rollback patch: {rb}"));
+    }
 }
 
 fn join_command(argv: &[String]) -> String {

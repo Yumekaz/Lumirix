@@ -18,6 +18,33 @@ pub struct RunRecord {
     pub status: RunStatus,
     pub exit_code: Option<i32>,
     pub task: Option<String>,
+    /// Git diff summary for this run (absent on older runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_diff: Option<DiffSummary>,
+}
+
+/// Machine-readable diff capture summary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiffSummary {
+    pub base_commit: Option<String>,
+    pub dirty_before: bool,
+    pub dirty_after: bool,
+    pub files_changed: u32,
+    pub lines_added: u32,
+    pub lines_deleted: u32,
+    pub files: Vec<FileDiffStat>,
+    #[serde(default)]
+    pub untracked: Vec<String>,
+    pub diff_patch: bool,
+    pub rollback_patch: bool,
+    pub rollback_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDiffStat {
+    pub path: String,
+    pub added: u64,
+    pub deleted: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

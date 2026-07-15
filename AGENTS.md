@@ -42,8 +42,8 @@ Do **not** jump ahead to: dashboard, cloud, multi-agent adapters, heavy LLM, per
 | Scope lock | DONE |
 | CLI `init` / `status` / `config show` | DONE (Rust, on origin) |
 | Agent run wrapper | **DONE** (Rust) |
-| Git diff + rollback patch | **NEXT** |
-| Basic risk engine | pending |
+| Git diff + rollback patch | **DONE** (Rust) |
+| Basic risk engine | **NEXT** |
 | Test evidence capture | pending |
 | Trust report V1 (MVP) | pending |
 | Policy engine | pending |
