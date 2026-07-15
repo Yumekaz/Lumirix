@@ -1,1 +1,15 @@
+/target
+.tools/
+.cargo/
+.lumirix/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# Private product blueprint — never commit or publish
 lumirix_full_project_spec.md

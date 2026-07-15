@@ -1,0 +1,15 @@
+[package]
+name = "lumirix-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lumirix CLI — trust infrastructure for autonomous coding agents"
+
+[[bin]]
+name = "lumirix"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+lumirix-core.workspace = true

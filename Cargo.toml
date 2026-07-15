@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lumirix-cli",
+    "crates/lumirix-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Yumekaz/Lumirix"
+
+[workspace.dependencies]
+lumirix-core = { path = "crates/lumirix-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.8"
