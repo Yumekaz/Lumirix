@@ -1,4 +1,4 @@
-//! Minimal SQLite bootstrap for Phase 1 (schema ready for Phase 2 runs).
+//! SQLite bootstrap and run index helpers.
 
 use std::path::Path;
 
@@ -43,11 +43,8 @@ pub fn init_database(db_path: &Path) -> Result<(), DbError> {
         "#,
     )?;
 
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM schema_version",
-        [],
-        |row| row.get(0),
-    )?;
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
 
     if count == 0 {
         conn.execute(
@@ -56,5 +53,45 @@ pub fn init_database(db_path: &Path) -> Result<(), DbError> {
         )?;
     }
 
+    Ok(())
+}
+
+/// Insert or replace a run row in the index.
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_run(
+    db_path: &Path,
+    run_id: &str,
+    started_at: &str,
+    ended_at: Option<&str>,
+    agent_command: &str,
+    exit_code: Option<i32>,
+    base_commit: Option<&str>,
+    status: &str,
+) -> Result<(), DbError> {
+    // Ensure schema exists even if DB was partially created.
+    init_database(db_path)?;
+    let conn = Connection::open(db_path)?;
+    conn.execute(
+        r#"
+        INSERT INTO runs (run_id, started_at, ended_at, agent_command, exit_code, base_commit, status)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(run_id) DO UPDATE SET
+            started_at = excluded.started_at,
+            ended_at = excluded.ended_at,
+            agent_command = excluded.agent_command,
+            exit_code = excluded.exit_code,
+            base_commit = excluded.base_commit,
+            status = excluded.status
+        "#,
+        rusqlite::params![
+            run_id,
+            started_at,
+            ended_at,
+            agent_command,
+            exit_code,
+            base_commit,
+            status,
+        ],
+    )?;
     Ok(())
 }

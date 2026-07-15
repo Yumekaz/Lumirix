@@ -1,4 +1,4 @@
-//! Lumirix CLI — Phase 1: init, status, config show.
+//! Lumirix CLI — init, status, config, run capture, and run inspection.
 
 use std::env;
 use std::path::PathBuf;
@@ -8,7 +8,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use lumirix_core::{
-    detect_git, format_init_message, init_project, Config, LumirixPaths,
+    detect_git, execute_run, format_init_message, format_minimal_report, format_run_list_line,
+    format_show, init_project, load_all_runs, load_last, load_run, Config, LumirixPaths, RunError,
+    StoreError,
 };
 
 #[derive(Parser, Debug)]
@@ -16,7 +18,7 @@ use lumirix_core::{
     name = "lumirix",
     version,
     about = "Trust infrastructure for autonomous coding agents",
-    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nPhase 1: project init, status, and config."
+    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs, and inspect results."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -38,6 +40,29 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    /// Run a command under Lumirix capture
+    Run {
+        /// Optional task description stored with the run
+        #[arg(long)]
+        task: Option<String>,
+        /// Command and arguments (use `--` before the program)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
+    /// List captured runs (newest first)
+    Runs,
+    /// Show metadata for a run (`last` or run id)
+    Show {
+        /// Run id, or `last` (default: last)
+        #[arg(default_value = "last")]
+        run: String,
+    },
+    /// Print a minimal report for a run (`last` or run id)
+    Report {
+        /// Run id, or `last` (default: last)
+        #[arg(default_value = "last")]
+        run: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -48,7 +73,7 @@ enum ConfigCommands {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
@@ -56,16 +81,38 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     let cwd = env::current_dir().context("failed to get current directory")?;
 
     match cli.command {
-        Commands::Init { force } => cmd_init(&cwd, force),
-        Commands::Status => cmd_status(&cwd),
+        Commands::Init { force } => {
+            cmd_init(&cwd, force)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Status => {
+            cmd_status(&cwd)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Commands::Config {
             command: ConfigCommands::Show,
-        } => cmd_config_show(&cwd),
+        } => {
+            cmd_config_show(&cwd)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Run { task, args } => cmd_run(&cwd, args, task),
+        Commands::Runs => {
+            cmd_runs(&cwd)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Show { run } => {
+            cmd_show(&cwd, &run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Report { run } => {
+            cmd_report(&cwd, &run)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -119,4 +166,83 @@ fn cmd_config_show(cwd: &PathBuf) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+fn cmd_run(cwd: &PathBuf, args: Vec<String>, task: Option<String>) -> Result<ExitCode> {
+    let paths = LumirixPaths::new(cwd);
+    let outcome = execute_run(&paths, args, task).map_err(map_run_error)?;
+
+    eprintln!(
+        "lumirix: run {} {} (exit {})",
+        outcome.record.run_id,
+        outcome.record.status,
+        outcome
+            .child_exit_code
+    );
+
+    Ok(exit_code_from_i32(outcome.child_exit_code))
+}
+
+fn cmd_runs(cwd: &PathBuf) -> Result<()> {
+    let paths = require_init(cwd)?;
+    let runs = load_all_runs(&paths).map_err(map_store_error)?;
+    if runs.is_empty() {
+        println!("No runs recorded yet.");
+        return Ok(());
+    }
+    for r in runs {
+        println!("{}", format_run_list_line(&r));
+    }
+    Ok(())
+}
+
+fn cmd_show(cwd: &PathBuf, run: &str) -> Result<()> {
+    let paths = require_init(cwd)?;
+    let record = load_run_ref(&paths, run)?;
+    println!("{}", format_show(&record, &paths));
+    Ok(())
+}
+
+fn cmd_report(cwd: &PathBuf, run: &str) -> Result<()> {
+    let paths = require_init(cwd)?;
+    let record = load_run_ref(&paths, run)?;
+    println!("{}", format_minimal_report(&record, &paths));
+    Ok(())
+}
+
+fn load_run_ref(
+    paths: &LumirixPaths,
+    run: &str,
+) -> Result<lumirix_core::RunRecord> {
+    if run == "last" {
+        load_last(paths).map_err(map_store_error)
+    } else {
+        load_run(paths, run).map_err(map_store_error)
+    }
+}
+
+fn require_init(cwd: &PathBuf) -> Result<LumirixPaths> {
+    let paths = LumirixPaths::new(cwd);
+    if !paths.is_initialized() {
+        bail!("Lumirix is not initialized in this directory. Run `lumirix init` first.");
+    }
+    Ok(paths)
+}
+
+fn map_run_error(e: RunError) -> anyhow::Error {
+    anyhow::anyhow!("{e}")
+}
+
+fn map_store_error(e: StoreError) -> anyhow::Error {
+    anyhow::anyhow!("{e}")
+}
+
+fn exit_code_from_i32(code: i32) -> ExitCode {
+    if code == 0 {
+        ExitCode::SUCCESS
+    } else if (1..=255).contains(&code) {
+        ExitCode::from(code as u8)
+    } else {
+        ExitCode::FAILURE
+    }
 }
