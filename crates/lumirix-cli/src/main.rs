@@ -1,4 +1,4 @@
-//! Lumirix CLI — init, status, config, run capture, and run inspection.
+//! Lumirix CLI — init, status, config, run capture, diffs, and inspection.
 
 use std::env;
 use std::path::PathBuf;
@@ -8,9 +8,9 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use lumirix_core::{
-    detect_git, execute_run, format_init_message, format_minimal_report, format_run_list_line,
-    format_show, init_project, load_all_runs, load_last, load_run, Config, LumirixPaths, RunError,
-    StoreError,
+    detect_git, execute_run, format_diff_report, format_init_message, format_minimal_report,
+    format_run_list_line, format_show, init_project, load_all_runs, load_last, load_run, Config,
+    LumirixPaths, RunError, RunOptions, StoreError,
 };
 
 #[derive(Parser, Debug)]
@@ -18,7 +18,7 @@ use lumirix_core::{
     name = "lumirix",
     version,
     about = "Trust infrastructure for autonomous coding agents",
-    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs, and inspect results."
+    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs and Git diffs, and inspect results."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,6 +42,9 @@ enum Commands {
     },
     /// Run a command under Lumirix capture
     Run {
+        /// Allow running with a dirty Git worktree
+        #[arg(long)]
+        allow_dirty: bool,
         /// Optional task description stored with the run
         #[arg(long)]
         task: Option<String>,
@@ -59,6 +62,12 @@ enum Commands {
     },
     /// Print a minimal report for a run (`last` or run id)
     Report {
+        /// Run id, or `last` (default: last)
+        #[arg(default_value = "last")]
+        run: String,
+    },
+    /// Show Git diff summary for a run (`last` or run id)
+    Diff {
         /// Run id, or `last` (default: last)
         #[arg(default_value = "last")]
         run: String,
@@ -100,7 +109,11 @@ fn run() -> Result<ExitCode> {
             cmd_config_show(&cwd)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Run { task, args } => cmd_run(&cwd, args, task),
+        Commands::Run {
+            allow_dirty,
+            task,
+            args,
+        } => cmd_run(&cwd, args, task, allow_dirty),
         Commands::Runs => {
             cmd_runs(&cwd)?;
             Ok(ExitCode::SUCCESS)
@@ -111,6 +124,10 @@ fn run() -> Result<ExitCode> {
         }
         Commands::Report { run } => {
             cmd_report(&cwd, &run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Diff { run } => {
+            cmd_diff(&cwd, &run)?;
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -168,16 +185,33 @@ fn cmd_config_show(cwd: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_run(cwd: &PathBuf, args: Vec<String>, task: Option<String>) -> Result<ExitCode> {
+fn cmd_run(
+    cwd: &PathBuf,
+    args: Vec<String>,
+    task: Option<String>,
+    allow_dirty: bool,
+) -> Result<ExitCode> {
     let paths = LumirixPaths::new(cwd);
-    let outcome = execute_run(&paths, args, task).map_err(map_run_error)?;
+    let outcome = execute_run(
+        &paths,
+        args,
+        RunOptions {
+            task,
+            allow_dirty,
+        },
+    )
+    .map_err(map_run_error)?;
+
+    let files = outcome
+        .record
+        .git_diff
+        .as_ref()
+        .map(|d| d.files_changed)
+        .unwrap_or(0);
 
     eprintln!(
-        "lumirix: run {} {} (exit {})",
-        outcome.record.run_id,
-        outcome.record.status,
-        outcome
-            .child_exit_code
+        "lumirix: run {} {} (exit {}, files changed {})",
+        outcome.record.run_id, outcome.record.status, outcome.child_exit_code, files
     );
 
     Ok(exit_code_from_i32(outcome.child_exit_code))
@@ -210,10 +244,14 @@ fn cmd_report(cwd: &PathBuf, run: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_run_ref(
-    paths: &LumirixPaths,
-    run: &str,
-) -> Result<lumirix_core::RunRecord> {
+fn cmd_diff(cwd: &PathBuf, run: &str) -> Result<()> {
+    let paths = require_init(cwd)?;
+    let record = load_run_ref(&paths, run)?;
+    println!("{}", format_diff_report(&record, &paths));
+    Ok(())
+}
+
+fn load_run_ref(paths: &LumirixPaths, run: &str) -> Result<lumirix_core::RunRecord> {
     if run == "last" {
         load_last(paths).map_err(map_store_error)
     } else {

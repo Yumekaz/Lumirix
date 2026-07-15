@@ -8,14 +8,14 @@ Lumirix verifies AI-generated software changes before they are merged, deployed,
 
 ## Status
 
-Rust CLI: project init, status, config, **agent run capture**, and run inspection.
+Rust CLI: project init, status, config, agent run capture, **Git diff / rollback artifacts**, and run inspection.
 
 ## Requirements
 
 - Rust toolchain (edition 2021)
 - **Windows:** Visual Studio Build Tools 2022 with C++ / MSVC + Windows SDK
 - **macOS/Linux:** standard system linker (`clang`/`gcc`)
-- Git (for full status; init works without Git in limited mode)
+- Git (for full status and diff capture; init/run work without Git in limited mode)
 
 ## Build
 
@@ -52,10 +52,12 @@ cargo run -p lumirix-cli -- <command>
 | `lumirix init --force` | Reinitialize defaults |
 | `lumirix status` | Show init state, Git branch/commit, LLM setting |
 | `lumirix config show` | Print `.lumirix/config.toml` |
-| `lumirix run -- <program> [args...]` | Run a command under capture (tees stdout/stderr) |
+| `lumirix run -- <program> [args...]` | Run under capture (tees stdout/stderr; captures Git diff after) |
+| `lumirix run --allow-dirty -- …` | Allow a dirty Git worktree |
 | `lumirix runs` | List captured runs (newest first) |
 | `lumirix show last` | Show metadata for the last run (or a run id) |
-| `lumirix report last` | Minimal run report (exit status + log paths) |
+| `lumirix report last` | Minimal run report (exit status, diff stats, logs) |
+| `lumirix diff last` | Git change summary (files/lines/rollback) |
 
 ### Examples
 
@@ -65,15 +67,12 @@ lumirix run -- git --version
 lumirix runs
 lumirix show last
 lumirix report last
+lumirix diff last
 ```
 
-On Windows, prefer real executables (e.g. `git`, `cmd /C echo hello`) rather than shell builtins alone.
+By default, `lumirix run` **requires a clean Git worktree** so the captured diff is attributable to that run. Use `--allow-dirty` to override.
 
-Optional task label:
-
-```bash
-lumirix run --task "smoke test" -- git status
-```
+On Windows, prefer real executables (e.g. `git`, `cmd /C …`) rather than shell builtins alone.
 
 `lumirix run` exits with the **same code as the wrapped command**.
 
@@ -92,11 +91,16 @@ After `init` / `run`, Lumirix writes local state under `.lumirix/` (gitignored):
       stdout.log
       stderr.log
       commands.log
+      diff.patch
+      rollback.patch
+      diff_summary.json
   db/lumirix.sqlite
   cache/
   snapshots/
   artifacts/
 ```
+
+Tracked-file changes are captured with `git diff HEAD` / `git diff -R HEAD`. Untracked paths are listed but may not be fully reverse-patched (rollback may be **partial**).
 
 LLM is **disabled by default**. The deterministic core is the source of truth.
 
@@ -105,7 +109,7 @@ LLM is **disabled by default**. The deterministic core is the source of truth.
 ```txt
 crates/
   lumirix-cli/    # CLI binary (`lumirix`)
-  lumirix-core/   # paths, config, git, init, db, run capture
+  lumirix-core/   # paths, config, git, init, db, run + diff capture
 Cargo.toml        # workspace
 ```
 
