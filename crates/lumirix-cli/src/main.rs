@@ -1,4 +1,4 @@
-//! Lumirix CLI — init, status, config, run capture, diffs, and inspection.
+//! Lumirix CLI — init, status, config, run capture, diffs, risks, evidence, reports, rollback.
 
 use std::env;
 use std::path::PathBuf;
@@ -8,10 +8,11 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use lumirix_core::{
-    detect_git, execute_run, format_diff_report, format_evidence_for_run, format_init_message,
-    format_risks_for_run, format_run_list_line, format_show, format_trust_report_md,
-    format_trust_report_text, generate_trust_report, init_project, load_all_runs, load_last,
-    load_run, Config, LumirixPaths, RunError, RunOptions, StoreError,
+    default_rollback_dest, detect_git, execute_run, export_rollback_patch, format_diff_report,
+    format_evidence_for_run, format_init_message, format_risks_for_run, format_run_list_line,
+    format_show, format_trust_report_md, format_trust_report_text, generate_trust_report,
+    init_project, is_worktree_dirty, load_all_runs, load_last, load_run, resolve_last_run_id,
+    Config, LumirixPaths, RunError, RunOptions, StoreError,
 };
 
 #[derive(Parser, Debug)]
@@ -19,7 +20,7 @@ use lumirix_core::{
     name = "lumirix",
     version,
     about = "Trust infrastructure for autonomous coding agents",
-    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs/diffs, detect risks and test evidence, and inspect results."
+    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs/diffs, detect risks and test evidence, and inspect trust reports."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -84,6 +85,15 @@ enum Commands {
     },
     /// Show test evidence for a run (`last` or run id)
     Evidence {
+        /// Run id, or `last` (default: last)
+        #[arg(default_value = "last")]
+        run: String,
+    },
+    /// Export rollback.patch for a run
+    Rollback {
+        /// Write patch to this path (default: ./rollback.patch)
+        #[arg(long, value_name = "PATH", default_value = "rollback.patch")]
+        write: PathBuf,
         /// Run id, or `last` (default: last)
         #[arg(default_value = "last")]
         run: String,
@@ -154,6 +164,10 @@ fn run() -> Result<ExitCode> {
             cmd_evidence(&cwd, &run)?;
             Ok(ExitCode::SUCCESS)
         }
+        Commands::Rollback { write, run } => {
+            cmd_rollback(&cwd, &run, write)?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -185,11 +199,21 @@ fn cmd_status(cwd: &PathBuf) -> Result<()> {
             Some(c) => println!("Current commit: {c}"),
             None => println!("Current commit: (unknown)"),
         }
+        let dirty = is_worktree_dirty(cwd);
+        if dirty {
+            println!("Worktree: dirty (uncommitted changes)");
+            println!("  tip: commit/stash for clean attribution, or use --allow-dirty on run");
+        } else {
+            println!("Worktree: clean");
+        }
     } else {
         println!("Git repo: not detected (limited mode).");
     }
 
     println!("LLM: {}", config.llm_status_label());
+    if config.git.require_clean_worktree_before_run {
+        println!("require_clean_worktree_before_run: true");
+    }
     Ok(())
 }
 
@@ -232,11 +256,21 @@ fn cmd_run(
         .as_ref()
         .map(|d| d.files_changed)
         .unwrap_or(0);
+    let risk = outcome.record.risk_level.as_deref().unwrap_or("-");
+    let evidence = outcome.record.evidence_level.as_deref().unwrap_or("-");
 
     eprintln!(
-        "lumirix: run {} {} (exit {}, files changed {})",
-        outcome.record.run_id, outcome.record.status, outcome.child_exit_code, files
+        "lumirix: run {} {} (exit {}, files={}, risk={}, evidence={})",
+        outcome.record.run_id,
+        outcome.record.status,
+        outcome.child_exit_code,
+        files,
+        risk,
+        evidence
     );
+    if let Some(ref rec) = outcome.record.recommendation {
+        eprintln!("lumirix: recommendation: {rec}");
+    }
 
     Ok(exit_code_from_i32(outcome.child_exit_code))
 }
@@ -264,7 +298,6 @@ fn cmd_show(cwd: &PathBuf, run: &str) -> Result<()> {
 fn cmd_report(cwd: &PathBuf, run: &str, format: &str) -> Result<()> {
     let paths = require_init(cwd)?;
     let mut record = load_run_ref(&paths, run)?;
-    // Always rebuild artifacts for freshness.
     let trust = generate_trust_report(&record, &paths).map_err(map_run_error)?;
     record.recommendation = Some(trust.verdict.recommendation.clone());
 
@@ -298,6 +331,32 @@ fn cmd_evidence(cwd: &PathBuf, run: &str) -> Result<()> {
     let paths = require_init(cwd)?;
     let record = load_run_ref(&paths, run)?;
     println!("{}", format_evidence_for_run(&record));
+    Ok(())
+}
+
+fn cmd_rollback(cwd: &PathBuf, run: &str, write: PathBuf) -> Result<()> {
+    let paths = require_init(cwd)?;
+    let run_id = if run == "last" {
+        resolve_last_run_id(&paths).map_err(map_store_error)?
+    } else {
+        run.to_string()
+    };
+    let dest = if write.as_os_str().is_empty() {
+        default_rollback_dest(cwd)
+    } else if write.is_relative() {
+        cwd.join(write)
+    } else {
+        write
+    };
+
+    let exported = export_rollback_patch(&paths, &run_id, &dest).map_err(map_store_error)?;
+    println!("Run: {}", exported.run_id);
+    println!("Source: {}", exported.source.display());
+    println!("Wrote: {} ({} bytes)", exported.dest.display(), exported.bytes);
+    if exported.empty {
+        println!("Warning: patch is empty.");
+    }
+    println!("{}", exported.status_note);
     Ok(())
 }
 

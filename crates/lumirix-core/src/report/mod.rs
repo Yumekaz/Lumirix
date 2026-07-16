@@ -219,6 +219,10 @@ pub fn render_text(report: &TrustReport) -> String {
                 lines.push(format!("- {} → {}", t.command, t.result));
             }
         }
+        lines.push(
+            "Note: V1 only inspects the top-level wrapped command for tests (not nested agent steps)."
+                .to_string(),
+        );
     } else {
         lines.push("(not captured)".to_string());
     }
@@ -343,6 +347,9 @@ pub fn render_markdown(report: &TrustReport) -> String {
             }
             md.push('\n');
         }
+        md.push_str(
+            "_Note: V1 only inspects the top-level wrapped command for tests (not nested agent steps)._\n\n",
+        );
     } else {
         md.push_str("_Not captured._\n\n");
     }

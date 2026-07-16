@@ -4,6 +4,7 @@ mod diff;
 mod id;
 pub mod model;
 mod process;
+mod rollback;
 pub mod store;
 
 use chrono::Local;
@@ -18,6 +19,7 @@ use crate::report::{self, TrustReport};
 use crate::risk::{self, RiskReport};
 
 pub use model::{DiffSummary, FileDiffStat, RunEvent, RunRecord, RunStatus};
+pub use rollback::{default_rollback_dest, export_rollback_patch, RollbackExport};
 pub use store::{
     load_all_runs, load_diff_summary, load_last, load_risk_report, load_run, list_run_ids,
     resolve_last_run_id, RunPaths, StoreError,
@@ -30,7 +32,10 @@ pub enum RunError {
     #[error("no command provided; usage: lumirix run -- <command> [args...]")]
     EmptyCommand,
     #[error(
-        "Git worktree is dirty. Commit or stash changes, or re-run with --allow-dirty."
+        "Git worktree is dirty (uncommitted changes present).\n\
+         Lumirix needs a clean tree so the captured diff is attributable to this run only.\n\
+         Fix: commit or stash, then re-run — or use: lumirix run --allow-dirty -- <command>\n\
+         Tip: `lumirix status` shows whether the worktree is dirty."
     )]
     DirtyWorktree,
     #[error(transparent)]
@@ -308,6 +313,9 @@ pub fn format_show(record: &RunRecord, paths: &LumirixPaths) -> String {
     append_diff_lines(&mut lines, record.git_diff.as_ref());
     append_risk_lines(&mut lines, record.risk.as_ref(), false);
     append_evidence_lines(&mut lines, record.evidence.as_ref(), false);
+    if let Some(ref rec) = record.recommendation {
+        lines.push(format!("Recommendation: {rec}"));
+    }
     lines.push(format!("Directory: {}", run_dir.display()));
     lines.push(format!("Stdout: {}", run_dir.join("stdout.log").display()));
     lines.push(format!("Stderr: {}", run_dir.join("stderr.log").display()));
@@ -436,17 +444,16 @@ pub fn format_run_list_line(record: &RunRecord) -> String {
         .as_ref()
         .map(|d| d.files_changed.to_string())
         .unwrap_or_else(|| "-".to_string());
-    let risk = record
-        .risk_level
-        .as_deref()
-        .unwrap_or("-");
+    let risk = record.risk_level.as_deref().unwrap_or("-");
+    let evidence = record.evidence_level.as_deref().unwrap_or("-");
     format!(
-        "{:<22}  {:<10}  exit={:<4}  files={:<4}  risk={:<8}  {}",
+        "{:<22}  {:<10}  exit={:<4}  files={:<4}  risk={:<8}  evidence={:<10}  {}",
         record.run_id,
         record.status.as_str(),
         exit,
         files,
         risk,
+        evidence,
         record.agent_command
     )
 }

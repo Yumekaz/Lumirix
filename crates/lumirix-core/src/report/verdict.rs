@@ -50,7 +50,7 @@ pub fn compute_recommendation(
                 "review_weak_evidence".into(),
             ),
             EvidenceLevel::Medium | EvidenceLevel::Strong | EvidenceLevel::NotNeeded => (
-                "Likely safe to proceed (still use human judgment).".into(),
+                "No strong block signals in V1 rules — still review before you merge.".into(),
                 "likely_safe".into(),
             ),
             EvidenceLevel::None => (
@@ -143,7 +143,7 @@ mod tests {
             EvidenceLevel::NotNeeded,
             RunStatus::Completed,
         );
-        assert!(t.contains("Likely safe"));
+        assert!(t.contains("review before you merge") || t.contains("No strong block"));
         assert_eq!(c, "likely_safe");
     }
 }

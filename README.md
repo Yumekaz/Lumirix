@@ -8,113 +8,117 @@ Lumirix verifies AI-generated software changes before they are merged, deployed,
 
 ## Status
 
-Rust CLI: project init, status, config, agent run capture, Git diff / rollback, risk detection, test evidence, and **trust reports** (Markdown/JSON/terminal).
+Rust CLI MVP: wrap a command, capture logs + Git diff, score risk and test evidence, export rollback patch, and print a **verdict-first trust report**.
 
 ## Requirements
 
 - Rust toolchain (edition 2021)
 - **Windows:** Visual Studio Build Tools 2022 with C++ / MSVC + Windows SDK
 - **macOS/Linux:** standard system linker (`clang`/`gcc`)
-- Git (for full status and diff capture; init/run work without Git in limited mode)
+- Git (for full status and diff capture; limited mode without Git)
 
 ## Build
 
-```bash
-cargo build -p lumirix-cli
+### Windows (recommended)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-### Windows (MSVC)
-
-Use an **x64 Native Tools Command Prompt for VS 2022**, or load the MSVC environment first:
+Or manually:
 
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 cargo build -p lumirix-cli
 ```
 
-## Install
+### Other platforms
+
+```bash
+cargo build -p lumirix-cli
+```
+
+Install:
 
 ```bash
 cargo install --path crates/lumirix-cli
 ```
 
-Or run without installing:
+## Try the MVP (5 minutes)
 
-```bash
-cargo run -p lumirix-cli -- <command>
+From the repo root, after building:
+
+```powershell
+# optional scripted walkthrough
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1
 ```
+
+Manual walkthrough:
+
+```bat
+target\debug\lumirix.exe init
+target\debug\lumirix.exe status
+
+rem Happy path
+target\debug\lumirix.exe run --allow-dirty -- git --version
+target\debug\lumirix.exe report last
+
+rem Critical risk demo
+target\debug\lumirix.exe run --allow-dirty -- cmd /C "echo SECRET=demo>> .env"
+target\debug\lumirix.exe risks last
+target\debug\lumirix.exe report last
+del .env
+
+rem Export rollback patch for last run that changed tracked files
+target\debug\lumirix.exe rollback last --write rollback.patch
+```
+
+Inspect artifacts under `.lumirix\runs\run_*\` (`report.md`, `risk.json`, `diff.patch`, `rollback.patch`, …).
+
+### Important MVP limits
+
+- **`run` wants a clean Git worktree** so diffs are attributable. Use `--allow-dirty` when demos leave the tree dirty. `status` shows dirty/clean.
+- **Test evidence V1** only inspects the **top-level** wrapped command (`cargo test`, `npm test`, …). Tests launched *inside* an agent are not seen yet.
+- **Rollback** reverses **tracked** Git changes via `rollback.patch`. Untracked files may remain (partial rollback).
+- Recommendations are **heuristic**, never absolute (“definitely safe”).
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `lumirix init` | Create `.lumirix/` (config, default policies, SQLite, empty runs/) |
-| `lumirix init --force` | Reinitialize defaults |
-| `lumirix status` | Show init state, Git branch/commit, LLM setting |
-| `lumirix config show` | Print `.lumirix/config.toml` |
-| `lumirix run -- <program> [args...]` | Run under capture (tees stdout/stderr; captures Git diff after) |
-| `lumirix run --allow-dirty -- …` | Allow a dirty Git worktree |
-| `lumirix runs` | List captured runs (newest first) |
-| `lumirix show last` | Show metadata for the last run (or a run id) |
-| `lumirix report last` | Full trust report (verdict + risk + evidence + next steps) |
-| `lumirix report last --format md` | Print Markdown trust report |
-| `lumirix report last --format json` | Print machine-readable trust report |
-| `lumirix diff last` | Git change summary (files/lines/rollback) |
-| `lumirix risks last` | Risk findings (sensitive paths / dangerous commands) |
-| `lumirix evidence last` | Test evidence strength (weak/medium/strong/…) |
-
-### Examples
-
-```bash
-lumirix init
-lumirix run -- git --version
-lumirix runs
-lumirix show last
-lumirix report last
-lumirix diff last
-lumirix risks last
-lumirix evidence last
-```
-
-V1 detects **top-level** test commands (`npm test`, `cargo test`, `pytest`, …). Tests spawned inside an agent process are not visible yet.
-
-
-By default, `lumirix run` **requires a clean Git worktree** so the captured diff is attributable to that run. Use `--allow-dirty` to override.
-
-On Windows, prefer real executables (e.g. `git`, `cmd /C …`) rather than shell builtins alone.
+| `lumirix init` | Create `.lumirix/` |
+| `lumirix status` | Init + Git + dirty/clean + LLM setting |
+| `lumirix config show` | Print config |
+| `lumirix run -- <program> [args...]` | Capture run (logs, diff, risk, evidence, report) |
+| `lumirix run --allow-dirty -- …` | Allow dirty worktree |
+| `lumirix runs` | List runs (risk + evidence columns) |
+| `lumirix show last` | Run metadata |
+| `lumirix report last` | Trust report (terminal) |
+| `lumirix report last --format md` | Markdown trust report |
+| `lumirix report last --format json` | JSON trust report |
+| `lumirix diff last` | Diff summary |
+| `lumirix risks last` | Risk findings |
+| `lumirix evidence last` | Evidence strength |
+| `lumirix rollback last --write rollback.patch` | Export reverse patch for the run |
 
 `lumirix run` exits with the **same code as the wrapped command**.
 
 ## Local store
 
-After `init` / `run`, Lumirix writes local state under `.lumirix/` (gitignored):
-
 ```txt
 .lumirix/
   config.toml
   policies/default.toml
-  runs/
-    run_YYYY_MM_DD_NNN/
-      run.json
-      events.jsonl
-      stdout.log
-      stderr.log
-      commands.log
-      diff.patch
-      rollback.patch
-      diff_summary.json
-      risk.json
-      tests.json
-      evidence.json
-      report.md
-      report.json
+  runs/run_YYYY_MM_DD_NNN/
+    run.json
+    events.jsonl
+    stdout.log / stderr.log
+    commands.log
+    diff.patch / rollback.patch / diff_summary.json
+    risk.json / tests.json / evidence.json
+    report.md / report.json
   db/lumirix.sqlite
-  cache/
-  snapshots/
-  artifacts/
 ```
-
-Tracked-file changes are captured with `git diff HEAD` / `git diff -R HEAD`. Untracked paths are listed but may not be fully reverse-patched (rollback may be **partial**).
 
 LLM is **disabled by default**. The deterministic core is the source of truth.
 
@@ -122,9 +126,11 @@ LLM is **disabled by default**. The deterministic core is the source of truth.
 
 ```txt
 crates/
-  lumirix-cli/    # CLI binary (`lumirix`)
-  lumirix-core/   # paths, config, git, init, db, run + diff capture
-Cargo.toml        # workspace
+  lumirix-cli/
+  lumirix-core/
+scripts/
+  build.ps1
+  demo.ps1
 ```
 
 ## License
