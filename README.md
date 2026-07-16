@@ -8,7 +8,7 @@ Lumirix verifies AI-generated software changes before they are merged, deployed,
 
 ## Status
 
-Rust CLI: project init, status, config, agent run capture, Git diff / rollback artifacts, **basic risk detection**, and run inspection.
+Rust CLI: project init, status, config, agent run capture, Git diff / rollback, basic risk detection, **test evidence**, and run inspection.
 
 ## Requirements
 
@@ -59,6 +59,7 @@ cargo run -p lumirix-cli -- <command>
 | `lumirix report last` | Minimal run report (exit status, diff stats, logs) |
 | `lumirix diff last` | Git change summary (files/lines/rollback) |
 | `lumirix risks last` | Risk findings (sensitive paths / dangerous commands) |
+| `lumirix evidence last` | Test evidence strength (weak/medium/strong/…) |
 
 ### Examples
 
@@ -70,7 +71,11 @@ lumirix show last
 lumirix report last
 lumirix diff last
 lumirix risks last
+lumirix evidence last
 ```
+
+V1 detects **top-level** test commands (`npm test`, `cargo test`, `pytest`, …). Tests spawned inside an agent process are not visible yet.
+
 
 By default, `lumirix run` **requires a clean Git worktree** so the captured diff is attributable to that run. Use `--allow-dirty` to override.
 
@@ -97,6 +102,8 @@ After `init` / `run`, Lumirix writes local state under `.lumirix/` (gitignored):
       rollback.patch
       diff_summary.json
       risk.json
+      tests.json
+      evidence.json
   db/lumirix.sqlite
   cache/
   snapshots/

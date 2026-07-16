@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use super::model::{DiffSummary, RunEvent, RunRecord};
+use crate::evidence::{EvidenceReport, TestsFile};
 use crate::paths::LumirixPaths;
 use crate::risk::RiskReport;
 
@@ -35,6 +36,8 @@ pub struct RunPaths {
     pub rollback_patch: PathBuf,
     pub diff_summary: PathBuf,
     pub risk_json: PathBuf,
+    pub tests_json: PathBuf,
+    pub evidence_json: PathBuf,
 }
 
 impl RunPaths {
@@ -50,6 +53,8 @@ impl RunPaths {
             rollback_patch: dir.join("rollback.patch"),
             diff_summary: dir.join("diff_summary.json"),
             risk_json: dir.join("risk.json"),
+            tests_json: dir.join("tests.json"),
+            evidence_json: dir.join("evidence.json"),
             dir,
         }
     }
@@ -119,6 +124,18 @@ pub fn load_risk_report(paths: &LumirixPaths, run_id: &str) -> Result<Option<Ris
     }
     let raw = fs::read_to_string(&run_paths.risk_json)?;
     Ok(Some(serde_json::from_str(&raw)?))
+}
+
+pub fn write_tests_file(paths: &RunPaths, file: &TestsFile) -> Result<(), StoreError> {
+    let json = serde_json::to_string_pretty(file)?;
+    fs::write(&paths.tests_json, format!("{json}\n"))?;
+    Ok(())
+}
+
+pub fn write_evidence_report(paths: &RunPaths, report: &EvidenceReport) -> Result<(), StoreError> {
+    let json = serde_json::to_string_pretty(report)?;
+    fs::write(&paths.evidence_json, format!("{json}\n"))?;
+    Ok(())
 }
 
 pub fn load_run(paths: &LumirixPaths, run_id: &str) -> Result<RunRecord, StoreError> {

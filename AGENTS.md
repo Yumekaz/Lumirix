@@ -44,8 +44,8 @@ Do **not** jump ahead to: dashboard, cloud, multi-agent adapters, heavy LLM, per
 | Agent run wrapper | **DONE** (Rust) |
 | Git diff + rollback patch | **DONE** (Rust) |
 | Basic risk engine | **DONE** (Rust) |
-| Test evidence capture | **NEXT** |
-| Trust report V1 (MVP) | pending |
+| Test evidence capture | **DONE** (Rust) |
+| Trust report V1 (MVP) | **NEXT** |
 | Policy engine | pending |
 | CI integration | pending |
 | Replay scripts | pending |

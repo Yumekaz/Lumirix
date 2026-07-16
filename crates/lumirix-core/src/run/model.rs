@@ -27,6 +27,12 @@ pub struct RunRecord {
     /// Full risk report (also written to risk.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<crate::risk::RiskReport>,
+    /// Evidence strength (weak/medium/strong/…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_level: Option<String>,
+    /// Full evidence report (also written to evidence.json).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::evidence::EvidenceReport>,
 }
 
 /// Machine-readable diff capture summary.

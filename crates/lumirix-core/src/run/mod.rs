@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::config::{Config, ConfigError};
 use crate::db::{self, DbError};
+use crate::evidence::{self, EvidenceReport, TestsFile};
 use crate::git;
 use crate::paths::LumirixPaths;
 use crate::risk::{self, RiskReport};
@@ -112,6 +113,8 @@ pub fn execute_run(
         git_diff: None,
         risk_level: None,
         risk: None,
+        evidence_level: None,
+        evidence: None,
     };
     store::write_run_json(&run_paths, &record)?;
 
@@ -192,6 +195,7 @@ pub fn execute_run(
                 record.git_diff = Some(diff::no_git_summary(dirty_before));
             }
             let _ = apply_risk_evaluation(&mut record, &run_paths, &mut next_event);
+            let _ = apply_evidence_evaluation(&mut record, &run_paths, None, &mut next_event);
             let _ = next_event("run.ended", serde_json::json!({ "status": "error" }));
             record.ended_at = Some(ended_at.clone());
             record.status = RunStatus::Error;
@@ -239,6 +243,7 @@ pub fn execute_run(
     }
 
     apply_risk_evaluation(&mut record, &run_paths, &mut next_event)?;
+    apply_evidence_evaluation(&mut record, &run_paths, exit_code, &mut next_event)?;
 
     next_event(
         "run.ended",
@@ -297,6 +302,7 @@ pub fn format_show(record: &RunRecord, paths: &LumirixPaths) -> String {
     }
     append_diff_lines(&mut lines, record.git_diff.as_ref());
     append_risk_lines(&mut lines, record.risk.as_ref(), false);
+    append_evidence_lines(&mut lines, record.evidence.as_ref(), false);
     lines.push(format!("Directory: {}", run_dir.display()));
     lines.push(format!("Stdout: {}", run_dir.join("stdout.log").display()));
     lines.push(format!("Stderr: {}", run_dir.join("stderr.log").display()));
@@ -340,8 +346,20 @@ pub fn format_minimal_report(record: &RunRecord, paths: &LumirixPaths) -> String
     }
     append_diff_lines(&mut lines, record.git_diff.as_ref());
     append_risk_lines(&mut lines, record.risk.as_ref(), true);
+    append_evidence_lines(&mut lines, record.evidence.as_ref(), true);
     lines.push(format!("Logs: {}", run_dir.join("stdout.log").display()));
     lines.join("\n")
+}
+
+/// `lumirix evidence last` output.
+pub fn format_evidence_for_run(record: &RunRecord) -> String {
+    if let Some(ref e) = record.evidence {
+        return evidence::format_evidence_report(e);
+    }
+    format!(
+        "Evidence: {}\nReason: evidence not captured for this run",
+        record.evidence_level.as_deref().unwrap_or("none")
+    )
 }
 
 /// `lumirix risks last` output.
@@ -478,6 +496,87 @@ where
     Ok(())
 }
 
+fn apply_evidence_evaluation<F>(
+    record: &mut RunRecord,
+    run_paths: &store::RunPaths,
+    exit_code: Option<i32>,
+    next_event: &mut F,
+) -> Result<(), RunError>
+where
+    F: FnMut(&str, serde_json::Value) -> Result<(), RunError>,
+{
+    let mut changed_paths: Vec<String> = Vec::new();
+    if let Some(ref d) = record.git_diff {
+        for f in &d.files {
+            changed_paths.push(f.path.clone());
+        }
+        for u in &d.untracked {
+            changed_paths.push(u.clone());
+        }
+    }
+
+    let report = evidence::evaluate_evidence(
+        &record.run_id,
+        &record.agent_command,
+        &record.agent_argv,
+        exit_code,
+        &changed_paths,
+    );
+
+    let tests_file = TestsFile {
+        run_id: record.run_id.clone(),
+        tests: report.tests.clone(),
+    };
+    store::write_tests_file(run_paths, &tests_file)?;
+    store::write_evidence_report(run_paths, &report)?;
+
+    if report.tests_detected {
+        next_event(
+            "test.detected",
+            serde_json::json!({
+                "count": report.tests.len(),
+                "kinds": report.tests.iter().map(|t| t.kind.clone()).collect::<Vec<_>>(),
+            }),
+        )?;
+        if let Some(t) = report.tests.first() {
+            next_event(
+                "test.ended",
+                serde_json::json!({
+                    "result": t.result,
+                    "exit_code": t.exit_code,
+                }),
+            )?;
+        }
+    }
+
+    next_event(
+        "evidence.evaluated",
+        serde_json::json!({
+            "level": report.level.as_str(),
+            "reason": report.reason,
+            "tests_detected": report.tests_detected,
+        }),
+    )?;
+
+    // Polish auth risk notes with real evidence text when available.
+    if let Some(ref mut risk) = record.risk {
+        for f in &mut risk.findings {
+            if f.category == "auth_change" {
+                f.evidence_note = Some(format!(
+                    "Evidence: {} — {}",
+                    report.level.display_title(),
+                    report.reason
+                ));
+            }
+        }
+        let _ = store::write_risk_report(run_paths, risk);
+    }
+
+    record.evidence_level = Some(report.level.as_str().to_string());
+    record.evidence = Some(report);
+    Ok(())
+}
+
 fn append_diff_lines(lines: &mut Vec<String>, summary: Option<&DiffSummary>) {
     if let Some(d) = summary {
         lines.push(format!("Files changed: {}", d.files_changed));
@@ -512,6 +611,22 @@ fn append_risk_lines(lines: &mut Vec<String>, report: Option<&RiskReport>, detai
             }
         } else if !r.findings.is_empty() {
             lines.push(format!("Risk findings: {}", r.findings.len()));
+        }
+    }
+}
+
+fn append_evidence_lines(lines: &mut Vec<String>, report: Option<&EvidenceReport>, detailed: bool) {
+    if let Some(e) = report {
+        lines.push(format!("Evidence: {}", e.level.display_title()));
+        if detailed {
+            lines.push(format!("Reason: {}", e.reason));
+            if e.tests.is_empty() {
+                lines.push("Tests: (none detected)".to_string());
+            } else {
+                for t in &e.tests {
+                    lines.push(format!("Tests: {} → {}", t.command, t.result));
+                }
+            }
         }
     }
 }
