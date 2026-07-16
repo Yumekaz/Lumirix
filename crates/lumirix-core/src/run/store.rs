@@ -38,6 +38,8 @@ pub struct RunPaths {
     pub risk_json: PathBuf,
     pub tests_json: PathBuf,
     pub evidence_json: PathBuf,
+    pub report_md: PathBuf,
+    pub report_json: PathBuf,
 }
 
 impl RunPaths {
@@ -55,6 +57,8 @@ impl RunPaths {
             risk_json: dir.join("risk.json"),
             tests_json: dir.join("tests.json"),
             evidence_json: dir.join("evidence.json"),
+            report_md: dir.join("report.md"),
+            report_json: dir.join("report.json"),
             dir,
         }
     }

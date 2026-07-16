@@ -33,6 +33,9 @@ pub struct RunRecord {
     /// Full evidence report (also written to evidence.json).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<crate::evidence::EvidenceReport>,
+    /// Trust recommendation from the report engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
 }
 
 /// Machine-readable diff capture summary.

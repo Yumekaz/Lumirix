@@ -9,8 +9,9 @@ use clap::{Parser, Subcommand};
 
 use lumirix_core::{
     detect_git, execute_run, format_diff_report, format_evidence_for_run, format_init_message,
-    format_minimal_report, format_risks_for_run, format_run_list_line, format_show, init_project,
-    load_all_runs, load_last, load_run, Config, LumirixPaths, RunError, RunOptions, StoreError,
+    format_risks_for_run, format_run_list_line, format_show, format_trust_report_md,
+    format_trust_report_text, generate_trust_report, init_project, load_all_runs, load_last,
+    load_run, Config, LumirixPaths, RunError, RunOptions, StoreError,
 };
 
 #[derive(Parser, Debug)]
@@ -60,8 +61,11 @@ enum Commands {
         #[arg(default_value = "last")]
         run: String,
     },
-    /// Print a minimal report for a run (`last` or run id)
+    /// Print a trust report for a run (`last` or run id)
     Report {
+        /// Output format: text (default), md, or json
+        #[arg(long, default_value = "text")]
+        format: String,
         /// Run id, or `last` (default: last)
         #[arg(default_value = "last")]
         run: String,
@@ -134,8 +138,8 @@ fn run() -> Result<ExitCode> {
             cmd_show(&cwd, &run)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Report { run } => {
-            cmd_report(&cwd, &run)?;
+        Commands::Report { format, run } => {
+            cmd_report(&cwd, &run, &format)?;
             Ok(ExitCode::SUCCESS)
         }
         Commands::Diff { run } => {
@@ -257,10 +261,22 @@ fn cmd_show(cwd: &PathBuf, run: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_report(cwd: &PathBuf, run: &str) -> Result<()> {
+fn cmd_report(cwd: &PathBuf, run: &str, format: &str) -> Result<()> {
     let paths = require_init(cwd)?;
-    let record = load_run_ref(&paths, run)?;
-    println!("{}", format_minimal_report(&record, &paths));
+    let mut record = load_run_ref(&paths, run)?;
+    // Always rebuild artifacts for freshness.
+    let trust = generate_trust_report(&record, &paths).map_err(map_run_error)?;
+    record.recommendation = Some(trust.verdict.recommendation.clone());
+
+    match format.to_lowercase().as_str() {
+        "md" | "markdown" => print!("{}", format_trust_report_md(&record, &paths)),
+        "json" => {
+            let json = serde_json::to_string_pretty(&trust)
+                .context("failed to serialize trust report")?;
+            println!("{json}");
+        }
+        "text" | "terminal" | _ => print!("{}", format_trust_report_text(&record, &paths)),
+    }
     Ok(())
 }
 

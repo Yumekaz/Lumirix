@@ -8,7 +8,7 @@ Lumirix verifies AI-generated software changes before they are merged, deployed,
 
 ## Status
 
-Rust CLI: project init, status, config, agent run capture, Git diff / rollback, basic risk detection, **test evidence**, and run inspection.
+Rust CLI: project init, status, config, agent run capture, Git diff / rollback, risk detection, test evidence, and **trust reports** (Markdown/JSON/terminal).
 
 ## Requirements
 
@@ -56,7 +56,9 @@ cargo run -p lumirix-cli -- <command>
 | `lumirix run --allow-dirty -- …` | Allow a dirty Git worktree |
 | `lumirix runs` | List captured runs (newest first) |
 | `lumirix show last` | Show metadata for the last run (or a run id) |
-| `lumirix report last` | Minimal run report (exit status, diff stats, logs) |
+| `lumirix report last` | Full trust report (verdict + risk + evidence + next steps) |
+| `lumirix report last --format md` | Print Markdown trust report |
+| `lumirix report last --format json` | Print machine-readable trust report |
 | `lumirix diff last` | Git change summary (files/lines/rollback) |
 | `lumirix risks last` | Risk findings (sensitive paths / dangerous commands) |
 | `lumirix evidence last` | Test evidence strength (weak/medium/strong/…) |
@@ -104,6 +106,8 @@ After `init` / `run`, Lumirix writes local state under `.lumirix/` (gitignored):
       risk.json
       tests.json
       evidence.json
+      report.md
+      report.json
   db/lumirix.sqlite
   cache/
   snapshots/

@@ -2,9 +2,9 @@
 
 mod diff;
 mod id;
-mod model;
+pub mod model;
 mod process;
-mod store;
+pub mod store;
 
 use chrono::Local;
 use thiserror::Error;
@@ -14,12 +14,13 @@ use crate::db::{self, DbError};
 use crate::evidence::{self, EvidenceReport, TestsFile};
 use crate::git;
 use crate::paths::LumirixPaths;
+use crate::report::{self, TrustReport};
 use crate::risk::{self, RiskReport};
 
 pub use model::{DiffSummary, FileDiffStat, RunEvent, RunRecord, RunStatus};
 pub use store::{
     load_all_runs, load_diff_summary, load_last, load_risk_report, load_run, list_run_ids,
-    resolve_last_run_id, StoreError,
+    resolve_last_run_id, RunPaths, StoreError,
 };
 
 #[derive(Debug, Error)]
@@ -115,6 +116,7 @@ pub fn execute_run(
         risk: None,
         evidence_level: None,
         evidence: None,
+        recommendation: None,
     };
     store::write_run_json(&run_paths, &record)?;
 
@@ -245,14 +247,17 @@ pub fn execute_run(
     apply_risk_evaluation(&mut record, &run_paths, &mut next_event)?;
     apply_evidence_evaluation(&mut record, &run_paths, exit_code, &mut next_event)?;
 
+    record.ended_at = Some(ended_at.clone());
+    record.status = status;
+    record.exit_code = exit_code;
+
+    apply_trust_report(&mut record, paths, &run_paths, &mut next_event)?;
+
     next_event(
         "run.ended",
         serde_json::json!({ "status": status.as_str(), "exit_code": exit_code }),
     )?;
 
-    record.ended_at = Some(ended_at);
-    record.status = status;
-    record.exit_code = exit_code;
     store::write_run_json(&run_paths, &record)?;
 
     db::upsert_run(
@@ -318,37 +323,32 @@ pub fn format_show(record: &RunRecord, paths: &LumirixPaths) -> String {
     lines.join("\n")
 }
 
-/// Minimal report (`lumirix report last`) — not a full trust report.
+/// Full trust report as terminal text (builds from record).
+pub fn format_trust_report_text(record: &RunRecord, paths: &LumirixPaths) -> String {
+    let report = report::build_trust_report(record, paths);
+    report::render_text(&report)
+}
+
+/// Full trust report as Markdown.
+pub fn format_trust_report_md(record: &RunRecord, paths: &LumirixPaths) -> String {
+    let report = report::build_trust_report(record, paths);
+    report::render_markdown(&report)
+}
+
+/// Build trust report, write artifacts, return report.
+pub fn generate_trust_report(
+    record: &RunRecord,
+    paths: &LumirixPaths,
+) -> Result<TrustReport, RunError> {
+    let run_paths = store::RunPaths::new(&paths.runs_dir, &record.run_id);
+    let report = report::build_trust_report(record, paths);
+    report::write_report_artifacts(&run_paths, &report)?;
+    Ok(report)
+}
+
+/// Backward-compatible name: terminal trust report.
 pub fn format_minimal_report(record: &RunRecord, paths: &LumirixPaths) -> String {
-    let run_dir = paths.runs_dir.join(&record.run_id);
-    let mut lines = vec![
-        format!("Run: {}", record.run_id),
-        format!("Status: {}", record.status),
-        format!("Command: {}", record.agent_command),
-    ];
-    match record.exit_code {
-        Some(0) => {
-            lines.push("Exit code: 0".to_string());
-            lines.push("Result: command ran and exited successfully.".to_string());
-        }
-        Some(code) => {
-            lines.push(format!("Exit code: {code}"));
-            lines.push("Result: command exited with a non-zero status.".to_string());
-        }
-        None => {
-            lines.push("Exit code: (none)".to_string());
-            lines.push("Result: command did not complete normally.".to_string());
-        }
-    }
-    match &record.base_commit {
-        Some(c) => lines.push(format!("Base commit: {c}")),
-        None => lines.push("Base commit: (none)".to_string()),
-    }
-    append_diff_lines(&mut lines, record.git_diff.as_ref());
-    append_risk_lines(&mut lines, record.risk.as_ref(), true);
-    append_evidence_lines(&mut lines, record.evidence.as_ref(), true);
-    lines.push(format!("Logs: {}", run_dir.join("stdout.log").display()));
-    lines.join("\n")
+    format_trust_report_text(record, paths)
 }
 
 /// `lumirix evidence last` output.
@@ -574,6 +574,29 @@ where
 
     record.evidence_level = Some(report.level.as_str().to_string());
     record.evidence = Some(report);
+    Ok(())
+}
+
+fn apply_trust_report<F>(
+    record: &mut RunRecord,
+    paths: &LumirixPaths,
+    run_paths: &store::RunPaths,
+    next_event: &mut F,
+) -> Result<(), RunError>
+where
+    F: FnMut(&str, serde_json::Value) -> Result<(), RunError>,
+{
+    let trust = report::build_trust_report(record, paths);
+    report::write_report_artifacts(run_paths, &trust)?;
+    next_event(
+        "report.generated",
+        serde_json::json!({
+            "recommendation_code": trust.verdict.recommendation_code,
+            "risk": trust.verdict.risk,
+            "evidence": trust.verdict.evidence,
+        }),
+    )?;
+    record.recommendation = Some(trust.verdict.recommendation);
     Ok(())
 }
 
