@@ -43,8 +43,8 @@ Do **not** jump ahead to: dashboard, cloud, multi-agent adapters, heavy LLM, per
 | CLI `init` / `status` / `config show` | DONE (Rust, on origin) |
 | Agent run wrapper | **DONE** (Rust) |
 | Git diff + rollback patch | **DONE** (Rust) |
-| Basic risk engine | **NEXT** |
-| Test evidence capture | pending |
+| Basic risk engine | **DONE** (Rust) |
+| Test evidence capture | **NEXT** |
 | Trust report V1 (MVP) | pending |
 | Policy engine | pending |
 | CI integration | pending |

@@ -21,6 +21,12 @@ pub struct RunRecord {
     /// Git diff summary for this run (absent on older runs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_diff: Option<DiffSummary>,
+    /// Overall risk level string (none/low/medium/high/critical).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    /// Full risk report (also written to risk.json).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<crate::risk::RiskReport>,
 }
 
 /// Machine-readable diff capture summary.

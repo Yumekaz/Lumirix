@@ -9,8 +9,8 @@ use clap::{Parser, Subcommand};
 
 use lumirix_core::{
     detect_git, execute_run, format_diff_report, format_init_message, format_minimal_report,
-    format_run_list_line, format_show, init_project, load_all_runs, load_last, load_run, Config,
-    LumirixPaths, RunError, RunOptions, StoreError,
+    format_risks_for_run, format_run_list_line, format_show, init_project, load_all_runs,
+    load_last, load_run, Config, LumirixPaths, RunError, RunOptions, StoreError,
 };
 
 #[derive(Parser, Debug)]
@@ -18,7 +18,7 @@ use lumirix_core::{
     name = "lumirix",
     version,
     about = "Trust infrastructure for autonomous coding agents",
-    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs and Git diffs, and inspect results."
+    long_about = "Lumirix verifies AI-generated software changes before they are merged, deployed, or trusted.\n\nWrap agent commands, capture runs and Git diffs, detect basic risks, and inspect results."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -68,6 +68,12 @@ enum Commands {
     },
     /// Show Git diff summary for a run (`last` or run id)
     Diff {
+        /// Run id, or `last` (default: last)
+        #[arg(default_value = "last")]
+        run: String,
+    },
+    /// Show risk findings for a run (`last` or run id)
+    Risks {
         /// Run id, or `last` (default: last)
         #[arg(default_value = "last")]
         run: String,
@@ -128,6 +134,10 @@ fn run() -> Result<ExitCode> {
         }
         Commands::Diff { run } => {
             cmd_diff(&cwd, &run)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Commands::Risks { run } => {
+            cmd_risks(&cwd, &run)?;
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -248,6 +258,13 @@ fn cmd_diff(cwd: &PathBuf, run: &str) -> Result<()> {
     let paths = require_init(cwd)?;
     let record = load_run_ref(&paths, run)?;
     println!("{}", format_diff_report(&record, &paths));
+    Ok(())
+}
+
+fn cmd_risks(cwd: &PathBuf, run: &str) -> Result<()> {
+    let paths = require_init(cwd)?;
+    let record = load_run_ref(&paths, run)?;
+    println!("{}", format_risks_for_run(&record));
     Ok(())
 }
 

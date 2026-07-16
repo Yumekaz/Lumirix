@@ -13,11 +13,12 @@ use crate::config::{Config, ConfigError};
 use crate::db::{self, DbError};
 use crate::git;
 use crate::paths::LumirixPaths;
+use crate::risk::{self, RiskReport};
 
 pub use model::{DiffSummary, FileDiffStat, RunEvent, RunRecord, RunStatus};
 pub use store::{
-    load_all_runs, load_diff_summary, load_last, load_run, list_run_ids, resolve_last_run_id,
-    StoreError,
+    load_all_runs, load_diff_summary, load_last, load_risk_report, load_run, list_run_ids,
+    resolve_last_run_id, StoreError,
 };
 
 #[derive(Debug, Error)]
@@ -109,6 +110,8 @@ pub fn execute_run(
         exit_code: None,
         task: options.task,
         git_diff: None,
+        risk_level: None,
+        risk: None,
     };
     store::write_run_json(&run_paths, &record)?;
 
@@ -188,6 +191,7 @@ pub fn execute_run(
             } else if !git_info.is_repo {
                 record.git_diff = Some(diff::no_git_summary(dirty_before));
             }
+            let _ = apply_risk_evaluation(&mut record, &run_paths, &mut next_event);
             let _ = next_event("run.ended", serde_json::json!({ "status": "error" }));
             record.ended_at = Some(ended_at.clone());
             record.status = RunStatus::Error;
@@ -233,6 +237,8 @@ pub fn execute_run(
     } else if !git_info.is_repo {
         record.git_diff = Some(diff::no_git_summary(dirty_before));
     }
+
+    apply_risk_evaluation(&mut record, &run_paths, &mut next_event)?;
 
     next_event(
         "run.ended",
@@ -290,6 +296,7 @@ pub fn format_show(record: &RunRecord, paths: &LumirixPaths) -> String {
         lines.push(format!("Task: {t}"));
     }
     append_diff_lines(&mut lines, record.git_diff.as_ref());
+    append_risk_lines(&mut lines, record.risk.as_ref(), false);
     lines.push(format!("Directory: {}", run_dir.display()));
     lines.push(format!("Stdout: {}", run_dir.join("stdout.log").display()));
     lines.push(format!("Stderr: {}", run_dir.join("stderr.log").display()));
@@ -332,8 +339,23 @@ pub fn format_minimal_report(record: &RunRecord, paths: &LumirixPaths) -> String
         None => lines.push("Base commit: (none)".to_string()),
     }
     append_diff_lines(&mut lines, record.git_diff.as_ref());
+    append_risk_lines(&mut lines, record.risk.as_ref(), true);
     lines.push(format!("Logs: {}", run_dir.join("stdout.log").display()));
     lines.join("\n")
+}
+
+/// `lumirix risks last` output.
+pub fn format_risks_for_run(record: &RunRecord) -> String {
+    if let Some(ref r) = record.risk {
+        return risk::format_risks_report(r);
+    }
+    format!(
+        "Overall risk: {}\nFindings: none (risk not captured for this run)",
+        record
+            .risk_level
+            .as_deref()
+            .unwrap_or("none")
+    )
 }
 
 /// `lumirix diff last` output (success-criteria style).
@@ -396,14 +418,64 @@ pub fn format_run_list_line(record: &RunRecord) -> String {
         .as_ref()
         .map(|d| d.files_changed.to_string())
         .unwrap_or_else(|| "-".to_string());
+    let risk = record
+        .risk_level
+        .as_deref()
+        .unwrap_or("-");
     format!(
-        "{:<22}  {:<10}  exit={:<4}  files={:<4}  {}",
+        "{:<22}  {:<10}  exit={:<4}  files={:<4}  risk={:<8}  {}",
         record.run_id,
         record.status.as_str(),
         exit,
         files,
+        risk,
         record.agent_command
     )
+}
+
+fn apply_risk_evaluation<F>(
+    record: &mut RunRecord,
+    run_paths: &store::RunPaths,
+    next_event: &mut F,
+) -> Result<(), RunError>
+where
+    F: FnMut(&str, serde_json::Value) -> Result<(), RunError>,
+{
+    let mut changed_paths: Vec<String> = Vec::new();
+    if let Some(ref d) = record.git_diff {
+        for f in &d.files {
+            changed_paths.push(f.path.clone());
+        }
+        for u in &d.untracked {
+            changed_paths.push(u.clone());
+        }
+    }
+    let report = risk::evaluate_risks(
+        &record.run_id,
+        &record.agent_command,
+        &record.agent_argv,
+        &changed_paths,
+    );
+    store::write_risk_report(run_paths, &report)?;
+    next_event(
+        "risk.evaluated",
+        serde_json::json!({
+            "overall_level": report.overall_level.as_str(),
+            "findings": report.findings.len(),
+        }),
+    )?;
+    if !report.findings.is_empty() {
+        next_event(
+            "risk.detected",
+            serde_json::json!({
+                "overall_level": report.overall_level.as_str(),
+                "findings": report.findings.len(),
+            }),
+        )?;
+    }
+    record.risk_level = Some(report.overall_level.as_str().to_string());
+    record.risk = Some(report);
+    Ok(())
 }
 
 fn append_diff_lines(lines: &mut Vec<String>, summary: Option<&DiffSummary>) {
@@ -420,6 +492,27 @@ fn append_diff_lines(lines: &mut Vec<String>, summary: Option<&DiffSummary>) {
             _ => "unavailable",
         };
         lines.push(format!("Rollback patch: {rb}"));
+    }
+}
+
+fn append_risk_lines(lines: &mut Vec<String>, report: Option<&RiskReport>, detailed: bool) {
+    if let Some(r) = report {
+        lines.push(format!("Risk: {}", r.overall_level.display_title()));
+        if detailed {
+            for f in &r.findings {
+                lines.push(format!(
+                    "  [{}] {} — {}",
+                    f.severity.as_str(),
+                    f.category,
+                    f.message
+                ));
+                if let Some(ref note) = f.evidence_note {
+                    lines.push(format!("    {note}"));
+                }
+            }
+        } else if !r.findings.is_empty() {
+            lines.push(format!("Risk findings: {}", r.findings.len()));
+        }
     }
 }
 

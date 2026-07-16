@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use super::model::{DiffSummary, RunEvent, RunRecord};
 use crate::paths::LumirixPaths;
+use crate::risk::RiskReport;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -33,6 +34,7 @@ pub struct RunPaths {
     pub diff_patch: PathBuf,
     pub rollback_patch: PathBuf,
     pub diff_summary: PathBuf,
+    pub risk_json: PathBuf,
 }
 
 impl RunPaths {
@@ -47,6 +49,7 @@ impl RunPaths {
             diff_patch: dir.join("diff.patch"),
             rollback_patch: dir.join("rollback.patch"),
             diff_summary: dir.join("diff_summary.json"),
+            risk_json: dir.join("risk.json"),
             dir,
         }
     }
@@ -100,6 +103,21 @@ pub fn load_diff_summary(paths: &LumirixPaths, run_id: &str) -> Result<Option<Di
         return Ok(None);
     }
     let raw = fs::read_to_string(&run_paths.diff_summary)?;
+    Ok(Some(serde_json::from_str(&raw)?))
+}
+
+pub fn write_risk_report(paths: &RunPaths, report: &RiskReport) -> Result<(), StoreError> {
+    let json = serde_json::to_string_pretty(report)?;
+    fs::write(&paths.risk_json, format!("{json}\n"))?;
+    Ok(())
+}
+
+pub fn load_risk_report(paths: &LumirixPaths, run_id: &str) -> Result<Option<RiskReport>, StoreError> {
+    let run_paths = RunPaths::new(&paths.runs_dir, run_id);
+    if !run_paths.risk_json.is_file() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&run_paths.risk_json)?;
     Ok(Some(serde_json::from_str(&raw)?))
 }
 
